@@ -200,7 +200,7 @@ struct cake_tin_data {
 struct cake_sched_data {
 	struct tcf_proto __rcu *filter_list; /* optional external classifier */
 	struct tcf_block *block;
-	struct cake_tin_data *tins;
+	struct cake_tin_data *tins[CAKE_MAX_TINS];
 
 	struct cake_heap_entry overflow_heap[CAKE_QUEUES * CAKE_MAX_TINS];
 	u16		overflow_timeout;
@@ -1384,15 +1384,15 @@ static void cake_heap_swap(struct cake_sched_data *q, u16 i, u16 j)
 	q->overflow_heap[i] = jj;
 	q->overflow_heap[j] = ii;
 
-	q->tins[ii.t].overflow_idx[ii.b] = j;
-	q->tins[jj.t].overflow_idx[jj.b] = i;
+	q->tins[ii.t]->overflow_idx[ii.b] = j;
+	q->tins[jj.t]->overflow_idx[jj.b] = i;
 }
 
 static u32 cake_heap_get_backlog(const struct cake_sched_data *q, u16 i)
 {
 	struct cake_heap_entry ii = q->overflow_heap[i];
 
-	return q->tins[ii.t].backlogs[ii.b];
+	return q->tins[ii.t]->backlogs[ii.b];
 }
 
 static void cake_heapify(struct cake_sched_data *q, u16 i)
@@ -1504,7 +1504,7 @@ static unsigned int cake_drop(struct Qdisc *sch, struct sk_buff **to_free)
 	tin = qq.t;
 	idx = qq.b;
 
-	b = &q->tins[tin];
+	b = q->tins[tin];
 	flow = &b->flows[idx];
 	skb = dequeue_head(flow);
 	if (unlikely(!skb)) {
@@ -1631,7 +1631,7 @@ static struct cake_tin_data *cake_select_tin(struct Qdisc *sch,
 			tin = 0;
 	}
 
-	return &q->tins[tin];
+	return q->tins[tin];
 }
 
 static u32 cake_classify(struct Qdisc *sch, struct cake_tin_data **t,
@@ -1893,7 +1893,7 @@ static s32 cake_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 static struct sk_buff *cake_dequeue_one(struct Qdisc *sch)
 {
 	struct cake_sched_data *q = qdisc_priv(sch);
-	struct cake_tin_data *b = &q->tins[q->cur_tin];
+	struct cake_tin_data *b = q->tins[q->cur_tin];
 	struct cake_flow *flow = &b->flows[q->cur_flow];
 	struct sk_buff *skb = NULL;
 	u32 len;
@@ -1928,7 +1928,7 @@ static void cake_clear_tin(struct Qdisc *sch, u16 tin)
 static struct sk_buff *cake_dequeue(struct Qdisc *sch)
 {
 	struct cake_sched_data *q = qdisc_priv(sch);
-	struct cake_tin_data *b = &q->tins[q->cur_tin];
+	struct cake_tin_data *b = q->tins[q->cur_tin];
 	struct cake_host *srchost, *dsthost;
 	ktime_t now = ktime_get();
 	struct cake_flow *flow;
@@ -1972,7 +1972,7 @@ begin:
 			b++;
 			if (q->cur_tin >= q->tin_cnt) {
 				q->cur_tin = 0;
-				b = q->tins;
+				b = q->tins[0];
 
 				if (wrapped) {
 					/* It's possible for q->qlen to be
@@ -1995,7 +1995,7 @@ begin:
 		int tin, best_tin = 0;
 
 		for (tin = 0; tin < q->tin_cnt; tin++) {
-			b = q->tins + tin;
+			b = q->tins[tin];
 			if ((b->sparse_flow_count + b->bulk_flow_count) > 0) {
 				ktime_t time_to_pkt = \
 					ktime_sub(b->time_next_packet, now);
@@ -2010,7 +2010,7 @@ begin:
 		}
 
 		q->cur_tin = best_tin;
-		b = q->tins + best_tin;
+		b = q->tins[best_tin];
 
 		/* No point in going further if no packets to deliver. */
 		if (unlikely(!(b->sparse_flow_count + b->bulk_flow_count)))
@@ -2185,10 +2185,10 @@ retry:
 		int i;
 
 		for (i = 0; i < q->tin_cnt; i++) {
-			if (q->tins[i].decaying_flow_count) {
+			if (q->tins[i]->decaying_flow_count) {
 				ktime_t next = \
 					ktime_add_ns(now,
-						     q->tins[i].cparams.target);
+						     q->tins[i]->cparams.target);
 
 				qdisc_watchdog_schedule_ns(&q->watchdog,
 							   ktime_to_ns(next));
@@ -2273,7 +2273,7 @@ static void cake_set_rate(struct cake_tin_data *b, u64 rate, u32 mtu,
 static int cake_config_besteffort(struct Qdisc *sch)
 {
 	struct cake_sched_data *q = qdisc_priv(sch);
-	struct cake_tin_data *b = &q->tins[0];
+	struct cake_tin_data *b = q->tins[0];
 	u32 mtu = psched_mtu(qdisc_dev(sch));
 	u64 rate = q->rate_bps;
 
@@ -2303,7 +2303,7 @@ static int cake_config_precedence(struct Qdisc *sch)
 	q->tin_order = normal_order;
 
 	for (i = 0; i < q->tin_cnt; i++) {
-		struct cake_tin_data *b = &q->tins[i];
+		struct cake_tin_data *b = q->tins[i];
 
 		cake_set_rate(b, rate, mtu, us_to_ns(q->target),
 			      us_to_ns(q->interval));
@@ -2395,7 +2395,7 @@ static int cake_config_diffserv8(struct Qdisc *sch)
 
 	/* class characteristics */
 	for (i = 0; i < q->tin_cnt; i++) {
-		struct cake_tin_data *b = &q->tins[i];
+		struct cake_tin_data *b = q->tins[i];
 
 		cake_set_rate(b, rate, mtu, us_to_ns(q->target),
 			      us_to_ns(q->interval));
@@ -2437,20 +2437,20 @@ static int cake_config_diffserv4(struct Qdisc *sch)
 	q->tin_order = bulk_order;
 
 	/* class characteristics */
-	cake_set_rate(&q->tins[0], rate, mtu,
+	cake_set_rate(q->tins[0], rate, mtu,
 		      us_to_ns(q->target), us_to_ns(q->interval));
-	cake_set_rate(&q->tins[1], rate >> 4, mtu,
+	cake_set_rate(q->tins[1], rate >> 4, mtu,
 		      us_to_ns(q->target), us_to_ns(q->interval));
-	cake_set_rate(&q->tins[2], rate >> 1, mtu,
+	cake_set_rate(q->tins[2], rate >> 1, mtu,
 		      us_to_ns(q->target), us_to_ns(q->interval));
-	cake_set_rate(&q->tins[3], rate >> 2, mtu,
+	cake_set_rate(q->tins[3], rate >> 2, mtu,
 		      us_to_ns(q->target), us_to_ns(q->interval));
 
 	/* bandwidth-sharing weights */
-	q->tins[0].tin_quantum = quantum;
-	q->tins[1].tin_quantum = quantum >> 4;
-	q->tins[2].tin_quantum = quantum >> 1;
-	q->tins[3].tin_quantum = quantum >> 2;
+	q->tins[0]->tin_quantum = quantum;
+	q->tins[1]->tin_quantum = quantum >> 4;
+	q->tins[2]->tin_quantum = quantum >> 1;
+	q->tins[3]->tin_quantum = quantum >> 2;
 
 	return 0;
 }
@@ -2474,17 +2474,17 @@ static int cake_config_diffserv3(struct Qdisc *sch)
 	q->tin_order = bulk_order;
 
 	/* class characteristics */
-	cake_set_rate(&q->tins[0], rate, mtu,
+	cake_set_rate(q->tins[0], rate, mtu,
 		      us_to_ns(q->target), us_to_ns(q->interval));
-	cake_set_rate(&q->tins[1], rate >> 4, mtu,
+	cake_set_rate(q->tins[1], rate >> 4, mtu,
 		      us_to_ns(q->target), us_to_ns(q->interval));
-	cake_set_rate(&q->tins[2], rate >> 2, mtu,
+	cake_set_rate(q->tins[2], rate >> 2, mtu,
 		      us_to_ns(q->target), us_to_ns(q->interval));
 
 	/* bandwidth-sharing weights */
-	q->tins[0].tin_quantum = quantum;
-	q->tins[1].tin_quantum = quantum >> 4;
-	q->tins[2].tin_quantum = quantum >> 2;
+	q->tins[0]->tin_quantum = quantum;
+	q->tins[1]->tin_quantum = quantum >> 4;
+	q->tins[2]->tin_quantum = quantum >> 2;
 
 	return 0;
 }
@@ -2519,11 +2519,11 @@ static void cake_reconfigure(struct Qdisc *sch)
 
 	for (c = q->tin_cnt; c < CAKE_MAX_TINS; c++) {
 		cake_clear_tin(sch, c);
-		q->tins[c].cparams.mtu_time = q->tins[ft].cparams.mtu_time;
+		q->tins[c]->cparams.mtu_time = q->tins[ft]->cparams.mtu_time;
 	}
 
-	q->rate_ns   = q->tins[ft].tin_rate_ns;
-	q->rate_shft = q->tins[ft].tin_rate_shft;
+	q->rate_ns   = q->tins[ft]->tin_rate_ns;
+	q->rate_shft = q->tins[ft]->tin_rate_shft;
 
 	if (q->buffer_config_limit) {
 		q->buffer_limit = q->buffer_config_limit;
@@ -2659,7 +2659,7 @@ static int cake_change(struct Qdisc *sch, struct nlattr *opt,
 		q->fwmark_shft = q->fwmark_mask ? __ffs(q->fwmark_mask) : 0;
 	}
 
-	if (q->tins) {
+	if (q->tins[0]) {
 		sch_tree_lock(sch);
 		cake_reconfigure(sch);
 		sch_tree_unlock(sch);
@@ -2670,47 +2670,65 @@ static int cake_change(struct Qdisc *sch, struct nlattr *opt,
 
 static void cake_destroy(struct Qdisc *sch)
 {
+	int tin;
 	struct cake_sched_data *q = qdisc_priv(sch);
 
 	qdisc_watchdog_cancel(&q->watchdog);
 	tcf_block_put(q->block);
-	kvfree(q->tins);
+	for (tin = 0; tin < CAKE_MAX_TINS; tin++) {
+		if (q->tins[tin] != NULL)
+			kvfree(q->tins[tin]);
+	}
+}
+
+static int cake_init_tin(struct cake_sched_data *q, int tin)
+{
+	int j;
+
+	/* Initialize the tin slab */
+	q->tins[tin] = kvcalloc(1, sizeof(struct cake_tin_data),
+			   GFP_KERNEL);
+	if (!q->tins[tin])
+		return ENOMEM;
+
+	/* Initialize the tin contents (yummy cake) */
+	struct cake_tin_data *b = q->tins[tin];
+
+	INIT_LIST_HEAD(&b->new_flows);
+	INIT_LIST_HEAD(&b->old_flows);
+	INIT_LIST_HEAD(&b->decaying_flows);
+	b->sparse_flow_count = 0;
+	b->bulk_flow_count = 0;
+	b->decaying_flow_count = 0;
+
+	for (j = 0; j < CAKE_QUEUES; j++) {
+		struct cake_flow *flow = b->flows + j;
+		u32 k = j * CAKE_MAX_TINS + tin;
+
+		INIT_LIST_HEAD(&flow->flowchain);
+		cobalt_vars_init(&flow->cvars);
+
+		q->overflow_heap[k].t = tin;
+		q->overflow_heap[k].b = j;
+		b->overflow_idx[j] = k;
+	}
+
+	return 0;
 }
 
 static int cake_init_tins(struct cake_sched_data *q)
 {
-	int i, j;
-
-	/* Initialize the tin slab */
-	q->tins = kvcalloc(CAKE_MAX_TINS, sizeof(struct cake_tin_data),
-			   GFP_KERNEL);
-	if (!q->tins)
-		return ENOMEM;
-
-	/* Initialize the tin contents (yummy cake) */
-	for (i = 0; i < CAKE_MAX_TINS; i++) {
-		struct cake_tin_data *b = q->tins + i;
-
-		INIT_LIST_HEAD(&b->new_flows);
-		INIT_LIST_HEAD(&b->old_flows);
-		INIT_LIST_HEAD(&b->decaying_flows);
-		b->sparse_flow_count = 0;
-		b->bulk_flow_count = 0;
-		b->decaying_flow_count = 0;
-
-		for (j = 0; j < CAKE_QUEUES; j++) {
-			struct cake_flow *flow = b->flows + j;
-			u32 k = j * CAKE_MAX_TINS + i;
-
-			INIT_LIST_HEAD(&flow->flowchain);
-			cobalt_vars_init(&flow->cvars);
-
-			q->overflow_heap[k].t = i;
-			q->overflow_heap[k].b = j;
-			b->overflow_idx[j] = k;
-		}
+	int tin, err;
+	/* NULL initialize, ready for later development. */
+	for (tin = 0; tin < CAKE_MAX_TINS; tin++) {
+		q->tins[tin] = NULL;
 	}
 
+	/* For now, initialize all of them. Nothing clever here. Yet. */
+	for (tin = 0; tin < CAKE_MAX_TINS; tin++) {
+		err = cake_init_tin(q, tin);
+		if (err != 0) return err;
+	}
 	return 0;
 }
 
@@ -2886,7 +2904,7 @@ static int cake_dump_stats(struct Qdisc *sch, struct gnet_dump *d)
 	} while (0)
 
 	for (i = 0; i < q->tin_cnt; i++) {
-		struct cake_tin_data *b = &q->tins[q->tin_order[i]];
+		struct cake_tin_data *b = q->tins[q->tin_order[i]];
 
 		ts = nla_nest_start_noflag(d->skb, i + 1);
 		if (!ts)
@@ -2988,7 +3006,7 @@ static int cake_dump_class_stats(struct Qdisc *sch, unsigned long cl,
 
 	if (idx < CAKE_QUEUES * q->tin_cnt) {
 		const struct cake_tin_data *b = \
-			&q->tins[q->tin_order[idx / CAKE_QUEUES]];
+			q->tins[q->tin_order[idx / CAKE_QUEUES]];
 		const struct sk_buff *skb;
 
 		flow = &b->flows[idx % CAKE_QUEUES];
@@ -3060,7 +3078,7 @@ static void cake_walk(struct Qdisc *sch, struct qdisc_walker *arg)
 		return;
 
 	for (i = 0; i < q->tin_cnt; i++) {
-		struct cake_tin_data *b = &q->tins[q->tin_order[i]];
+		struct cake_tin_data *b = q->tins[q->tin_order[i]];
 
 		for (j = 0; j < CAKE_QUEUES; j++) {
 			if (list_empty(&b->flows[j].flowchain) ||
