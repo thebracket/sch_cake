@@ -2679,11 +2679,37 @@ static void cake_destroy(struct Qdisc *sch)
 
 static int cake_init_tins(struct cake_sched_data *q)
 {
+	int i, j;
+
 	/* Initialize the tin slab */
 	q->tins = kvcalloc(CAKE_MAX_TINS, sizeof(struct cake_tin_data),
 			   GFP_KERNEL);
 	if (!q->tins)
 		return ENOMEM;
+
+	/* Initialize the tin contents (yummy cake) */
+	for (i = 0; i < CAKE_MAX_TINS; i++) {
+		struct cake_tin_data *b = q->tins + i;
+
+		INIT_LIST_HEAD(&b->new_flows);
+		INIT_LIST_HEAD(&b->old_flows);
+		INIT_LIST_HEAD(&b->decaying_flows);
+		b->sparse_flow_count = 0;
+		b->bulk_flow_count = 0;
+		b->decaying_flow_count = 0;
+
+		for (j = 0; j < CAKE_QUEUES; j++) {
+			struct cake_flow *flow = b->flows + j;
+			u32 k = j * CAKE_MAX_TINS + i;
+
+			INIT_LIST_HEAD(&flow->flowchain);
+			cobalt_vars_init(&flow->cvars);
+
+			q->overflow_heap[k].t = i;
+			q->overflow_heap[k].b = j;
+			b->overflow_idx[j] = k;
+		}
+	}
 
 	return 0;
 }
@@ -2692,7 +2718,7 @@ static int cake_init(struct Qdisc *sch, struct nlattr *opt,
 		     struct netlink_ext_ack *extack)
 {
 	struct cake_sched_data *q = qdisc_priv(sch);
-	int i, j, err;
+	int i, err;
 
 	sch->limit = 10240;
 	q->tin_mode = CAKE_DIFFSERV_DIFFSERV3;
@@ -2727,29 +2753,6 @@ static int cake_init(struct Qdisc *sch, struct nlattr *opt,
 
 	if (cake_init_tins(q) == ENOMEM) 
 		goto nomem;
-
-	for (i = 0; i < CAKE_MAX_TINS; i++) {
-		struct cake_tin_data *b = q->tins + i;
-
-		INIT_LIST_HEAD(&b->new_flows);
-		INIT_LIST_HEAD(&b->old_flows);
-		INIT_LIST_HEAD(&b->decaying_flows);
-		b->sparse_flow_count = 0;
-		b->bulk_flow_count = 0;
-		b->decaying_flow_count = 0;
-
-		for (j = 0; j < CAKE_QUEUES; j++) {
-			struct cake_flow *flow = b->flows + j;
-			u32 k = j * CAKE_MAX_TINS + i;
-
-			INIT_LIST_HEAD(&flow->flowchain);
-			cobalt_vars_init(&flow->cvars);
-
-			q->overflow_heap[k].t = i;
-			q->overflow_heap[k].b = j;
-			b->overflow_idx[j] = k;
-		}
-	}
 
 	cake_reconfigure(sch);
 	q->avg_peak_bandwidth = q->rate_bps;
