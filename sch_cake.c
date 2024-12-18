@@ -2677,6 +2677,17 @@ static void cake_destroy(struct Qdisc *sch)
 	kvfree(q->tins);
 }
 
+static int cake_init_tins(struct cake_sched_data *q)
+{
+	/* Initialize the tin slab */
+	q->tins = kvcalloc(CAKE_MAX_TINS, sizeof(struct cake_tin_data),
+			   GFP_KERNEL);
+	if (!q->tins)
+		return ENOMEM;
+
+	return 0;
+}
+
 static int cake_init(struct Qdisc *sch, struct nlattr *opt,
 		     struct netlink_ext_ack *extack)
 {
@@ -2714,9 +2725,7 @@ static int cake_init(struct Qdisc *sch, struct nlattr *opt,
 	for (i = 1; i <= CAKE_QUEUES; i++)
 		quantum_div[i] = 65535 / i;
 
-	q->tins = kvcalloc(CAKE_MAX_TINS, sizeof(struct cake_tin_data),
-			   GFP_KERNEL);
-	if (!q->tins)
+	if (cake_init_tins(q) == ENOMEM) 
 		goto nomem;
 
 	for (i = 0; i < CAKE_MAX_TINS; i++) {
