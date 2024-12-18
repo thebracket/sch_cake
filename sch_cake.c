@@ -76,8 +76,8 @@
 #endif
 
 #define CAKE_SET_WAYS (8)
-#define CAKE_MAX_TINS (4)
-#define CAKE_QUEUES (512)
+#define CAKE_MAX_TINS (8)
+#define CAKE_QUEUES (1024)
 #define CAKE_FLOW_MASK 63
 #define CAKE_FLOW_NAT_FLAG 64
 
@@ -1673,6 +1673,10 @@ hash:
 }
 
 static void cake_reconfigure(struct Qdisc *sch);
+static int cake_ensure_n_tins(
+	struct cake_sched_data *q, 
+	int n_tins
+);
 
 static s32 cake_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 			struct sk_buff **to_free)
@@ -2685,6 +2689,10 @@ static int cake_init_tin(struct cake_sched_data *q, int tin)
 {
 	int j;
 
+	/* If the tin isn't NULL, don't do anything */
+	if (q->tins[tin] != NULL)
+		return 0;
+
 	/* Initialize the tin slab */
 	q->tins[tin] = kvcalloc(1, sizeof(struct cake_tin_data),
 			   GFP_KERNEL);
@@ -2718,16 +2726,28 @@ static int cake_init_tin(struct cake_sched_data *q, int tin)
 
 static int cake_init_tins(struct cake_sched_data *q)
 {
-	int tin, err;
+	int tin;
 	/* NULL initialize, ready for later development. */
 	for (tin = 0; tin < CAKE_MAX_TINS; tin++) {
 		q->tins[tin] = NULL;
 	}
 
-	/* For now, initialize all of them. Nothing clever here. Yet. */
-	for (tin = 0; tin < CAKE_MAX_TINS; tin++) {
+	/* Don't actually initialize the tins yet! */
+	/*for (tin = 0; tin < CAKE_MAX_TINS; tin++) {
 		err = cake_init_tin(q, tin);
 		if (err != 0) return err;
+	}*/
+	return 0;
+}
+
+static int cake_ensure_n_tins(
+	struct cake_sched_data *q, 
+	int n_tins
+) {
+	/* Make sure that n_tins tins are available. */
+	int i;
+	for (i = 0; i < n_tins; i++) {
+		cake_init_tin(q, i);
 	}
 	return 0;
 }
@@ -2771,6 +2791,8 @@ static int cake_init(struct Qdisc *sch, struct nlattr *opt,
 
 	if (cake_init_tins(q) == ENOMEM) 
 		goto nomem;
+
+	cake_ensure_n_tins(q, CAKE_MAX_TINS);
 
 	cake_reconfigure(sch);
 	q->avg_peak_bandwidth = q->rate_bps;
