@@ -231,6 +231,7 @@ struct cake_sched_data {
 	u32		buffer_max_used;
 	u32		buffer_limit;
 	u32		buffer_config_limit;
+	u8		tins_available;
 
 	/* indices for dequeue */
 	u16		cur_tin;
@@ -1397,7 +1398,7 @@ static u32 cake_heap_get_backlog(const struct cake_sched_data *q, u16 i)
 
 static void cake_heapify(struct cake_sched_data *q, u16 i)
 {
-	static const u32 a = CAKE_MAX_TINS * CAKE_QUEUES;
+	u32 a = q->tins_available * CAKE_QUEUES;
 	u32 mb = cake_heap_get_backlog(q, i);
 	u32 m = i;
 
@@ -1434,7 +1435,7 @@ static void cake_heapify(struct cake_sched_data *q, u16 i)
 
 static void cake_heapify_up(struct cake_sched_data *q, u16 i)
 {
-	while (i > 0 && i < CAKE_MAX_TINS * CAKE_QUEUES) {
+	while (i > 0 && i < q->tins_available * CAKE_QUEUES) {
 		u16 p = (i - 1) >> 1;
 		u32 ib = cake_heap_get_backlog(q, i);
 		u32 pb = cake_heap_get_backlog(q, p);
@@ -1494,7 +1495,7 @@ static unsigned int cake_drop(struct Qdisc *sch, struct sk_buff **to_free)
 	if (!q->overflow_timeout) {
 		int i;
 		/* Build fresh max-heap */
-		for (i = CAKE_MAX_TINS * CAKE_QUEUES / 2; i >= 0; i--)
+		for (i = q->tins_available * CAKE_QUEUES / 2; i >= 0; i--)
 			cake_heapify(q, i);
 	}
 	q->overflow_timeout = 65535;
@@ -1677,6 +1678,17 @@ static int cake_ensure_n_tins(
 	struct cake_sched_data *q, 
 	int n_tins
 );
+
+static int cake_tins_required(u8 mode) {
+	switch (mode) {
+		case CAKE_DIFFSERV_BESTEFFORT: return 1;
+		case CAKE_DIFFSERV_PRECEDENCE: return 8;
+		case CAKE_DIFFSERV_DIFFSERV8: return 8;
+		case CAKE_DIFFSERV_DIFFSERV4: return 4;
+		case CAKE_DIFFSERV_DIFFSERV3: return 3;		
+		default: return CAKE_MAX_TINS;
+	}
+}
 
 static s32 cake_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 			struct sk_buff **to_free)
@@ -2210,8 +2222,9 @@ retry:
 static void cake_reset(struct Qdisc *sch)
 {
 	u32 c;
+	struct cake_sched_data *q = qdisc_priv(sch);
 
-	for (c = 0; c < CAKE_MAX_TINS; c++)
+	for (c = 0; c < q->tins_available; c++)
 		cake_clear_tin(sch, c);
 }
 
@@ -2496,7 +2509,10 @@ static int cake_config_diffserv3(struct Qdisc *sch)
 static void cake_reconfigure(struct Qdisc *sch)
 {
 	struct cake_sched_data *q = qdisc_priv(sch);
-	int c, ft;
+	int c, ft, tins_required;
+
+	tins_required = cake_tins_required(q->tin_mode);
+	cake_ensure_n_tins(q, tins_required);
 
 	switch (q->tin_mode) {
 	case CAKE_DIFFSERV_BESTEFFORT:
@@ -2521,7 +2537,7 @@ static void cake_reconfigure(struct Qdisc *sch)
 		break;
 	}
 
-	for (c = q->tin_cnt; c < CAKE_MAX_TINS; c++) {
+	for (c = q->tin_cnt; c < tins_required; c++) {
 		cake_clear_tin(sch, c);
 		q->tins[c]->cparams.mtu_time = q->tins[ft]->cparams.mtu_time;
 	}
@@ -2749,6 +2765,7 @@ static int cake_ensure_n_tins(
 	for (i = 0; i < n_tins; i++) {
 		cake_init_tin(q, i);
 	}
+	q->tins_available = n_tins;
 	return 0;
 }
 
@@ -2792,8 +2809,7 @@ static int cake_init(struct Qdisc *sch, struct nlattr *opt,
 	if (cake_init_tins(q) == ENOMEM) 
 		goto nomem;
 
-	cake_ensure_n_tins(q, CAKE_MAX_TINS);
-
+	/* Determine how many tins we need */
 	cake_reconfigure(sch);
 	q->avg_peak_bandwidth = q->rate_bps;
 	q->min_netlen = ~0;
