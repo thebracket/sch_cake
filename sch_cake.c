@@ -76,8 +76,8 @@
 #endif
 
 #define CAKE_SET_WAYS (8)
-#define CAKE_MAX_TINS (8)
-#define CAKE_QUEUES (1024)
+#define CAKE_MAX_TINS (4)
+#define CAKE_QUEUES (512)
 #define CAKE_FLOW_MASK 63
 #define CAKE_FLOW_NAT_FLAG 64
 
